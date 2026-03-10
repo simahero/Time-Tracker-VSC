@@ -2,7 +2,7 @@
   "name": "time-tracker",
   "displayName": "Time Tracker",
   "description": "Tracks time spent on a project, updates a database every minute, and shows time in the status bar.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -16,24 +16,86 @@
   "contributes": {
     "commands": [
       {
-        "command": "time-tracker.helloWorld",
-        "title": "Hello World"
-      },
-      {
         "command": "time-tracker.syncToLocalFile",
         "title": "Sync Time Tracker Data to Local File"
       },
       {
         "command": "time-tracker.loadFromLocalFile",
         "title": "Load Time Tracker Data from Local File"
+      },
+      {
+        "command": "time-tracker.searchProjects",
+        "title": "Filter Projects",
+        "icon": "$(search)"
+      },
+      {
+        "command": "time-tracker.toggleViewMode",
+        "title": "Toggle Daily/Monthly",
+        "icon": "$(calendar)"
+      },
+      {
+        "command": "time-tracker.toggleUnit",
+        "title": "Toggle Minutes/Hours",
+        "icon": "$(clock)"
+      },
+      {
+        "command": "time-tracker.deleteProject",
+        "title": "Delete Project",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "time-tracker.deleteEntry",
+        "title": "Delete Entry",
+        "icon": "$(trash)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "time-tracker.searchProjects",
+          "when": "view == timeTrackerProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "time-tracker.clearSearch",
+          "when": "view == timeTrackerProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "time-tracker.toggleViewMode",
+          "when": "view == timeTrackerProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "time-tracker.toggleUnit",
+          "when": "view == timeTrackerProjects",
+          "group": "navigation"
+        },
+        {
+          "command": "time-tracker.deleteProject",
+          "when": "false",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "time-tracker.deleteProject",
+          "when": "view == timeTrackerProjects && viewItem == project",
+          "group": "inline"
+        },
+        {
+          "command": "time-tracker.deleteEntry",
+          "when": "view == timeTrackerProjects && viewItem == entry",
+          "group": "inline"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
           "id": "timeTrackerViewContainer",
           "title": "Time Tracker",
-          "icon": "resources/clock.svg"
+          "icon": "resources/icon.svg"
         }
       ]
     },

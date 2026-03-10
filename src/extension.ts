@@ -4,100 +4,18 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import { ProjectTreeDataProvider, registerProjectTreeProvider } from './projectTree'
+import { getTodayKey, getProjectKey } from './timeUtils'
+import { updateDatabase, getTrackedMinutes, syncToLocalFile, loadFromLocalFile, autoSync } from './storage'
 
 let statusBarItem: vscode.StatusBarItem
 let interval: NodeJS.Timeout | undefined
 let startTime: number
-let syncFilePath: string | undefined = undefined
 let projectTreeProvider: ProjectTreeDataProvider | undefined = undefined
-
-function getTodayKey(): string {
-	const today = new Date()
-	const year = today.getFullYear()
-	const month = String(today.getMonth() + 1).padStart(2, '0')
-	const day = String(today.getDate()).padStart(2, '0')
-	return `${year}.${month}.${day}`
-}
-
-function getProjectKey(): string {
-	return vscode.workspace.name || 'unknown-project'
-}
-
-function updateDatabase(context: vscode.ExtensionContext, minutes: number) {
-	const todayKey = getTodayKey()
-	const projectKey = getProjectKey()
-	const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
-
-	if (!db[projectKey]) db[projectKey] = {}
-	db[projectKey][todayKey] = (db[projectKey][todayKey] || 0) + minutes
-
-	context.globalState.update('timeTrackerDB', db)
-	if (projectTreeProvider) projectTreeProvider.refresh()
-}
-
-function getTrackedMinutes(context: vscode.ExtensionContext): number {
-	const todayKey = getTodayKey()
-	const projectKey = getProjectKey()
-	const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
-	return db[projectKey]?.[todayKey] || 0
-}
 
 function updateStatusBar(context: vscode.ExtensionContext) {
 	const minutes = getTrackedMinutes(context)
 	statusBarItem.text = `$(clock) ${getProjectKey()}: ${minutes} min`
 	statusBarItem.show()
-}
-
-export async function syncToLocalFile(context: vscode.ExtensionContext) {
-	const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
-	const uri = await vscode.window.showSaveDialog({
-		saveLabel: 'Save Time Tracker Data',
-		filters: { JSON: ['json'] },
-		defaultUri: vscode.Uri.file(path.join(process.env.HOME || process.env.USERPROFILE || '.', 'vscode-time-tracker.json')),
-	})
-	if (!uri) return
-	syncFilePath = uri.fsPath
-	context.globalState.update('timeTrackerSyncPath', syncFilePath)
-	try {
-		fs.writeFileSync(syncFilePath, JSON.stringify(db, null, 2), 'utf8')
-		vscode.window.showInformationMessage(`Time Tracker data synced to ${syncFilePath}`)
-	} catch (err) {
-		vscode.window.showErrorMessage('Failed to sync time tracker data: ' + err)
-	}
-}
-
-export async function loadFromLocalFile(context: vscode.ExtensionContext) {
-	const uri = await vscode.window.showOpenDialog({
-		canSelectMany: false,
-		filters: { JSON: ['json'] },
-		title: 'Select Time Tracker Data File',
-	})
-	if (!uri || uri.length === 0) return
-	try {
-		const data = fs.readFileSync(uri[0].fsPath, 'utf8')
-		const db = JSON.parse(data)
-		context.globalState.update('timeTrackerDB', db)
-		syncFilePath = uri[0].fsPath
-		context.globalState.update('timeTrackerSyncPath', syncFilePath)
-		vscode.window.showInformationMessage('Time Tracker data loaded from local file.')
-	} catch (err) {
-		vscode.window.showErrorMessage('Failed to load time tracker data: ' + err)
-	}
-}
-
-function autoSync(context: vscode.ExtensionContext) {
-	if (!syncFilePath) {
-		syncFilePath = context.globalState.get<string>('timeTrackerSyncPath')
-	}
-	if (syncFilePath) {
-		const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
-		try {
-			fs.writeFileSync(syncFilePath, JSON.stringify(db, null, 2), 'utf8')
-			console.log(`Auto-synced Time Tracker data to ${syncFilePath}`)
-		} catch (err) {
-			console.error('Failed to auto-sync time tracker data: ' + err)
-		}
-	}
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -107,21 +25,84 @@ export function activate(context: vscode.ExtensionContext) {
 
 	startTime = Date.now()
 	interval = setInterval(() => {
-		updateDatabase(context, 1)
+		updateDatabase(context, 1, () => projectTreeProvider?.refresh())
 		updateStatusBar(context)
 	}, 60000)
-
-	syncFilePath = context.globalState.get<string>('timeTrackerSyncPath')
 
 	setInterval(() => {
 		autoSync(context)
 	}, 300000)
 
 	projectTreeProvider = registerProjectTreeProvider(context)
-	vscode.window.createTreeView('timeTrackerProjects', { treeDataProvider: projectTreeProvider })
 
 	context.subscriptions.push(vscode.commands.registerCommand('time-tracker.syncToLocalFile', () => syncToLocalFile(context)))
 	context.subscriptions.push(vscode.commands.registerCommand('time-tracker.loadFromLocalFile', () => loadFromLocalFile(context)))
+
+	// New commands for search, clear, delete, and toggles
+	context.subscriptions.push(
+		vscode.commands.registerCommand('time-tracker.searchProjects', async () => {
+			if (!projectTreeProvider) return
+			const q = await vscode.window.showInputBox({ prompt: 'Filter projects (substring)', placeHolder: 'Type to filter projects' })
+			projectTreeProvider.setFilter(q)
+		}),
+	)
+
+	// clearSearch and deleteProject commands removed — deletion managed differently per UX
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('time-tracker.toggleViewMode', () => {
+			if (!projectTreeProvider) return
+			const current = projectTreeProvider.getViewMode()
+			projectTreeProvider.setViewMode(current === 'daily' ? 'monthly' : 'daily')
+		}),
+	)
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('time-tracker.toggleUnit', () => {
+			if (!projectTreeProvider) return
+			const current = projectTreeProvider.getUnit()
+			projectTreeProvider.setUnit(current === 'minutes' ? 'hours' : 'minutes')
+		}),
+	)
+
+	// Deletion commands — triggered from inline tree item buttons; VS Code passes the ProjectItem as arg
+	context.subscriptions.push(
+		vscode.commands.registerCommand('time-tracker.deleteEntry', async (item: import('./projectTree').ProjectItem) => {
+			const projectKey = item.parentKey
+			const entryKey = item.label as string
+			if (!projectKey) return
+			const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
+			if (!db[projectKey]) return
+			// Monthly keys are YYYY.MM (len 7), daily are YYYY.MM.DD (len 10)
+			const isMonth = entryKey.length === 7
+			const label = isMonth ? `${entryKey} (month)` : entryKey
+			const choice = await vscode.window.showWarningMessage(`Delete ${label} from ${projectKey}?`, { modal: true }, 'Delete')
+			if (choice !== 'Delete') return
+			if (!isMonth) {
+				delete db[projectKey][entryKey]
+			} else {
+				for (const day of Object.keys(db[projectKey])) {
+					if (day.slice(0, 7) === entryKey) delete db[projectKey][day]
+				}
+			}
+			await context.globalState.update('timeTrackerDB', db)
+			projectTreeProvider?.refresh()
+		}),
+	)
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('time-tracker.deleteProject', async (item: import('./projectTree').ProjectItem) => {
+			const projectKey = item.projectKey
+			if (!projectKey) return
+			const db = context.globalState.get<Record<string, Record<string, number>>>('timeTrackerDB') || {}
+			if (!db[projectKey]) return
+			const choice = await vscode.window.showWarningMessage(`Delete entire project "${projectKey}"?`, { modal: true }, 'Delete')
+			if (choice !== 'Delete') return
+			delete db[projectKey]
+			await context.globalState.update('timeTrackerDB', db)
+			projectTreeProvider?.refresh()
+		}),
+	)
 }
 
 export function deactivate() {
